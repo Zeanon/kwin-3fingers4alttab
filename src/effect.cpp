@@ -1,56 +1,155 @@
-// SPDX-FileCopyrightText: 2024 kwin-3fingerswipe4alttab contributors
+// SPDX-FileCopyrightText: 2024 kwin-3fingers4alttab contributors
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "effect.h"
 
-#include <effect/effecthandler.h>
-#include <effect/globals.h>
+#include <input.h>
+#include <input_event.h>
+#include <keyboard_input.h>
+#include <core/inputdevice.h>
 
-#include <QAction>
-#include <QDBusConnection>
-#include <QDBusMessage>
-#include <QDBusPendingCall>
+#include <KConfig>
+#include <KConfigGroup>
+#include <QTimer>
+#include <cmath>
+#include <linux/input-event-codes.h>
 
 namespace KWin
 {
 
 SwipeForAltTabEffect::SwipeForAltTabEffect()
 {
-    // 3-finger swipe left → Walk Through Windows (previous window in MRU order)
-    auto *forwardAction = new QAction(this);
-    forwardAction->setObjectName(QStringLiteral("3fingerswipe-walk-forward"));
-    connect(forwardAction, &QAction::triggered, this, &SwipeForAltTabEffect::walkForward);
-    effects->registerTouchpadSwipeShortcut(SwipeDirection::Left, 3, forwardAction);
-
-    // 3-finger swipe right → Walk Through Windows Reverse (next window in MRU order)
-    auto *backwardAction = new QAction(this);
-    backwardAction->setObjectName(QStringLiteral("3fingerswipe-walk-backward"));
-    connect(backwardAction, &QAction::triggered, this, &SwipeForAltTabEffect::walkBackward);
-    effects->registerTouchpadSwipeShortcut(SwipeDirection::Right, 3, backwardAction);
+    input()->installInputEventSpy(this);
+    reconfigure(ReconfigureAll);
 }
 
-void SwipeForAltTabEffect::walkForward()
+void SwipeForAltTabEffect::reconfigure(ReconfigureFlags)
 {
-    invokeWindowWalk(QStringLiteral("Walk Through Windows"));
+    KConfig config(QStringLiteral("kwin-3fingers4alttabrc"), KConfig::SimpleConfig);
+    KConfigGroup cfg = config.group(QStringLiteral("General"));
+    m_activationThreshold = cfg.readEntry("ActivationThreshold", 40.0);
+    m_cycleThreshold      = cfg.readEntry("CycleThreshold",      100.0);
 }
 
-void SwipeForAltTabEffect::walkBackward()
+SwipeForAltTabEffect::~SwipeForAltTabEffect()
 {
-    invokeWindowWalk(QStringLiteral("Walk Through Windows (Reverse)"));
+    if (m_altHeld)
+        cancelSwitching();
 }
 
-// Triggers the existing KWin "Walk Through Windows" shortcut via kglobalaccel.
-// This reuses the same tabbox UI as Alt+Tab — no custom rendering needed.
-void SwipeForAltTabEffect::invokeWindowWalk(const QString &shortcutName)
+void SwipeForAltTabEffect::swipeGestureBegin(PointerSwipeGestureBeginEvent *event)
 {
-    QDBusMessage msg = QDBusMessage::createMethodCall(
-        QStringLiteral("org.kde.kglobalaccel"),
-        QStringLiteral("/component/kwin"),
-        QStringLiteral("org.kde.kglobalaccel.Component"),
-        QStringLiteral("invokeShortcut")
-    );
-    msg << shortcutName;
-    QDBusConnection::sessionBus().asyncCall(msg);
+    if (event->fingerCount != 3 || m_state != State::Idle)
+        return;
+    m_state = State::Tracking;
+    m_delta = {};
+    m_lastCycleX = 0;
+}
+
+void SwipeForAltTabEffect::swipeGestureUpdate(PointerSwipeGestureUpdateEvent *event)
+{
+    if (m_state == State::Idle)
+        return;
+
+    m_delta += event->delta;
+
+    const double ax = std::abs(m_delta.x());
+    const double ay = std::abs(m_delta.y());
+
+    if (m_state == State::Tracking) {
+        if (ax > m_activationThreshold && ax > ay * 1.2) {
+            startSwitching(m_delta.x() > 0);
+            m_state = State::Switching;
+            m_lastCycleX = m_delta.x();
+        } else if (ay > m_activationThreshold && ay > ax * 1.2) {
+            m_state = State::Idle;
+        }
+    } else if (m_state == State::Switching) {
+        const double traveled = m_delta.x() - m_lastCycleX;
+        if (std::abs(traveled) >= m_cycleThreshold) {
+            injectCycleKey(traveled > 0);
+            m_lastCycleX = m_delta.x();
+        }
+    }
+}
+
+void SwipeForAltTabEffect::swipeGestureEnd(PointerSwipeGestureEndEvent *event)
+{
+    Q_UNUSED(event)
+    if (m_state == State::Switching)
+        acceptSwitching();
+    m_state = State::Idle;
+}
+
+void SwipeForAltTabEffect::swipeGestureCancelled(PointerSwipeGestureCancelEvent *event)
+{
+    Q_UNUSED(event)
+    if (m_state == State::Switching)
+        cancelSwitching();
+    m_state = State::Idle;
+}
+
+// Inject Alt + [Shift +] Tab to open the task switcher and take one step.
+// Deferred: processKey() must not be called re-entrantly from within a spy callback.
+void SwipeForAltTabEffect::startSwitching(bool forward)
+{
+    m_altHeld = true;
+    QTimer::singleShot(0, this, [this, forward]() {
+        injectKeyDown(KEY_LEFTALT);
+        if (!forward)
+            injectKeyDown(KEY_LEFTSHIFT);
+        injectKeyDown(KEY_TAB);
+        injectKeyUp(KEY_TAB);
+        if (!forward)
+            injectKeyUp(KEY_LEFTSHIFT);
+    });
+}
+
+// While the switcher is open (Alt held), inject [Shift +] Tab to cycle one step.
+void SwipeForAltTabEffect::injectCycleKey(bool forward)
+{
+    QTimer::singleShot(0, this, [this, forward]() {
+        if (!forward)
+            injectKeyDown(KEY_LEFTSHIFT);
+        injectKeyDown(KEY_TAB);
+        injectKeyUp(KEY_TAB);
+        if (!forward)
+            injectKeyUp(KEY_LEFTSHIFT);
+    });
+}
+
+// Release Alt — the switcher accepts the highlighted window and closes.
+void SwipeForAltTabEffect::acceptSwitching()
+{
+    if (!m_altHeld)
+        return;
+    m_altHeld = false;
+    QTimer::singleShot(0, this, [this]() {
+        injectKeyUp(KEY_LEFTALT);
+    });
+}
+
+// Cancel via Escape then release Alt — reverts to original window.
+void SwipeForAltTabEffect::cancelSwitching()
+{
+    if (!m_altHeld)
+        return;
+    m_altHeld = false;
+    QTimer::singleShot(0, this, [this]() {
+        injectKeyDown(KEY_ESC);
+        injectKeyUp(KEY_ESC);
+        injectKeyUp(KEY_LEFTALT);
+    });
+}
+
+void SwipeForAltTabEffect::injectKeyDown(uint32_t key)
+{
+    input()->keyboard()->processKey(key, KeyboardKeyState::Pressed, std::chrono::microseconds(0));
+}
+
+void SwipeForAltTabEffect::injectKeyUp(uint32_t key)
+{
+    input()->keyboard()->processKey(key, KeyboardKeyState::Released, std::chrono::microseconds(0));
 }
 
 } // namespace KWin
