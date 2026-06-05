@@ -1,0 +1,15 @@
+{
+    "KPlugin": {
+        "Authors": [
+            {
+                "Name": "kwin-3fingerswipe4alttab contributors"
+            }
+        ],
+        "Category": "Window Management",
+        "Description": "Switch windows with a 3-finger touchpad swipe using the Alt+Tab interface. Swipe left to go to the previous window, swipe right to go to the next.",
+        "EnabledByDefault": true,
+        "License": "GPL-2.0-or-later",
+        "Name": "3-Finger Swipe for Alt+Tab",
+        "Version": "0.1.0"
+    }
+}
