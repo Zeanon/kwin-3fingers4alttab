@@ -29,16 +29,18 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
 
 # Prepare install directories
-mkdir -p ~/.local/lib/x86_64-linux-gnu/plugins/kwin/effects/plugins
-mkdir -p ~/.local/lib/x86_64-linux-gnu/plugins/kwin/effects/configs
+mkdir -p /usr/lib/x86_64-linux-gnu/qt6/plugins/kwin/effects/plugins
+mkdir -p /usr/lib/x86_64-linux-gnu/qt6/plugins/kwin/effects/configs
 
 # Install effect (must use mv — cp a loaded .so crashes the desktop)
-mv -f build/kwin_effect_3fingers4alttab.so \
-      ~/.local/lib/x86_64-linux-gnu/plugins/kwin/effects/plugins/
+sudo mv -f build/kwin_effect_3fingers4alttab.so \
+      /usr/lib/x86_64-linux-gnu/qt6/plugins/kwin/effects/plugins/
+
 
 # Install config UI
-cp -f build/kwin_effect_3fingers4alttab_config.so \
-      ~/.local/lib/x86_64-linux-gnu/plugins/kwin/effects/configs/
+sudo cp -f build/kwin_effect_3fingers4alttab_config.so \
+      /usr/lib/x86_64-linux-gnu/qt6/plugins/kwin/effects/configs/
+
 ```
 
 Then restart KWin:

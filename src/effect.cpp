@@ -58,7 +58,7 @@ void SwipeForAltTabEffect::swipeGestureUpdate(PointerSwipeGestureUpdateEvent *ev
 
     if (m_state == State::Tracking) {
         if (ax > m_activationThreshold && ax > ay * 1.2) {
-            startSwitching(m_delta.x() > 0);
+            startSwitching(m_delta.x() < 0);
             m_state = State::Switching;
             m_lastCycleX = m_delta.x();
         } else if (ay > m_activationThreshold && ay > ax * 1.2) {
